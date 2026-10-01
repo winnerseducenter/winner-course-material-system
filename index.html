@@ -438,8 +438,36 @@
           </div>
         </div>
 
+        <!-- 空狀態引導卡片 (當尚未有任何工單時) -->
+        <div v-if="groupedMaterials.length === 0" class="bg-white rounded-2xl p-12 text-center border-2 border-dashed border-slate-200">
+          <div class="w-16 h-16 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl shadow-inner">
+            <i class="fa-solid fa-box-open"></i>
+          </div>
+          <h3 class="text-lg font-bold text-slate-800">目前尚無講義工單紀錄</h3>
+          <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 leading-relaxed">
+            系統尚未載入講義資料。您可以點擊上方「<span class="font-bold text-amber-600">掃描 Gmail 歷史送印信件</span>」一鍵從 Gmail 寄件備份讀取並即時同步；或前往「<span class="font-bold text-indigo-600">送印精靈</span>」建立第一筆工單！
+          </p>
+          <div class="mt-6 flex justify-center space-x-3">
+            <button 
+              @click="triggerGmailScan(false)" 
+              :disabled="isScanningGmail" 
+              class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-sm flex items-center space-x-1.5 transition-all"
+            >
+              <i class="fa-solid fa-envelope-open-text"></i>
+              <span>立即掃描 Gmail 歷史信件</span>
+            </button>
+            <button 
+              @click="loadOrders" 
+              class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all flex items-center space-x-1"
+            >
+              <i class="fa-solid fa-rotate"></i>
+              <span>從試算表重新讀取</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 講義母卡片清單 (母子架構) -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <div 
             v-for="group in groupedMaterials" 
             :key="group.materialName"
@@ -744,6 +772,15 @@
               </div>
             </div>
           </div>
+
+          <!-- 對帳工作台空狀態 -->
+          <div v-else class="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+            <div class="w-12 h-12 bg-slate-200 text-slate-500 rounded-xl flex items-center justify-center mx-auto mb-2 text-xl">
+              <i class="fa-solid fa-file-invoice-dollar"></i>
+            </div>
+            <h4 class="font-bold text-slate-700">尚未載入廠商請款 Excel</h4>
+            <p class="text-xs text-slate-400 mt-1">請於上方拖曳或選取影印店提供的月結 Excel 檔案，系統將自動比對系統工單並即時核算差額。</p>
+          </div>
         </div>
       </section>
 
@@ -826,7 +863,11 @@
               </div>
 
               <!-- 學生卡片格狀清單 -->
-              <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-96 overflow-y-auto custom-scrollbar p-1">
+              <div v-if="activeRoster.length === 0" class="py-12 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                <i class="fa-solid fa-user-plus text-slate-300 text-3xl mb-2"></i>
+                <p class="text-xs text-slate-400">目前尚無名單，請在左側輸入學生姓名後點擊【解析並載入名單】</p>
+              </div>
+              <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 max-h-96 overflow-y-auto custom-scrollbar p-1">
                 <div 
                   v-for="(student, sIdx) in activeRoster" 
                   :key="sIdx"
@@ -1202,6 +1243,8 @@
 
         const triggerGmailScan = (forceReload = false) => {
           isScanningGmail.value = true;
+          triggerToast('開始掃描', forceReload ? '正在清除舊資料並重新完整掃描 Gmail...' : '正在掃描 Gmail 歷史送印信件與標籤...');
+
           if (typeof google !== 'undefined' && google.script && google.script.run) {
             google.script.run
               .withSuccessHandler((res) => {
@@ -1209,12 +1252,19 @@
                 if (res && res.success) {
                   scanReport.value = res;
                   // 若後端有即時回傳全部工單，直接更新前端畫面
-                  if (res.allOrders && Array.isArray(res.allOrders) && res.allOrders.length > 0) {
+                  if (res.allOrders && Array.isArray(res.allOrders)) {
                     orders.value = res.allOrders;
                   }
-                  showScanResultModal.value = true;
+                  // 雙重保證向試算表請求最新工單
+                  loadOrders(true);
+                  loadCleanupList();
                   updateCleanupBadge();
-                  triggerToast('掃描完成', res.message);
+
+                  // 自動切換到講義庫存分頁，讓使用者立刻看到母子講義卡片
+                  currentTab.value = 'inventory';
+
+                  triggerToast('即時更新完成', `已成功同步 ${orders.value.length} 筆講義至系統資料庫！`);
+                  showScanResultModal.value = true;
                 } else {
                   triggerToast('掃描失敗', res ? res.message : '未知錯誤', 'error');
                 }
@@ -1232,27 +1282,39 @@
                 { index: 1, date: "2026-08-20 14:32", subject: "[國三上社會講義][黑白][學21][08/27(四)][公版封面]", materialName: "國三上社會講義", copies: "學21", colorType: "黑白", dueDate: "08/27(四)", isReprint: false, deliveryStatus: "已收到", importStatus: "✅ 成功匯入資料庫", labels: ["888講義DM印製/泗商影印社", "888講義DM印製/講義已收到"], attachments: ["國中教育會考社會.pdf (32.1 MB)", "O社會公版.ai (5.2 MB)"] },
                 { index: 2, date: "2026-08-20 15:10", subject: "[學測數學講義B3][彩色][學26/教1][08/20(四)][公版封面]", materialName: "學測數學講義B3", copies: "學26/教1", colorType: "彩色", dueDate: "08/20(四)", isReprint: false, deliveryStatus: "已收到", importStatus: "✅ 成功匯入資料庫", labels: ["888講義DM印製/泗商影印社", "888講義DM印製/講義已收到"], attachments: ["115學測數學第1部分.pdf (22.5 MB)", "115學測數學第2部分.pdf (20.0 MB)", "O數學公版.ai (5.1 MB)"] },
                 { index: 3, date: "2026-08-20 16:05", subject: "[高二物理講義][黑白][學8][08/20(四)][要分隔(藍色)][公版封面]", materialName: "高二物理講義", copies: "學8", colorType: "黑白", dueDate: "08/20(四)", isReprint: false, deliveryStatus: "已收到", importStatus: "✅ 成功匯入資料庫", labels: ["888講義DM印製/泗商影印社", "888講義DM印製/講義已收到"], attachments: ["高二物理講義.pdf (18.6 MB)", "O物理公版.ai (4.8 MB)"] },
-                { index: 4, date: "2026-07-09 11:20", subject: "[加印][學測數學講義B2][彩色][學2][07/09(四)][公版封面]", materialName: "學測數學講義B2", copies: "學2", colorType: "彩色", dueDate: "07/09(四)", isReprint: true, deliveryStatus: "已收到", importStatus: "已存在資料庫 (已跳過)", labels: ["888講義DM印製/泗商影印社", "888講義DM印製/講義已收到"], attachments: ["115學測數學.pdf (24.0 MB)", "O數學公版.ai (5.1 MB)"] },
+                { index: 4, date: "2026-07-09 11:20", subject: "[加印][學測數學講義B2][彩色][學2][07/09(四)][公版封面]", materialName: "學測數學講義B2", copies: "學2", colorType: "彩色", dueDate: "07/09(四)", isReprint: true, deliveryStatus: "已收到", importStatus: "✅ 成功匯入資料庫", labels: ["888講義DM印製/泗商影印社", "888講義DM印製/講義已收到"], attachments: ["115學測數學.pdf (24.0 MB)", "O數學公版.ai (5.1 MB)"] },
                 { index: 5, date: "2026-09-02 09:15", subject: "[國一上英文講義][黑白][學20][09/2(三)][公版封面]", materialName: "國一上英文講義", copies: "學20", colorType: "黑白", dueDate: "09/2(三)", isReprint: false, deliveryStatus: "待收書", importStatus: "✅ 成功匯入資料庫", labels: ["888講義DM印製/泗商影印社"], attachments: ["英文B1L1-6講義.pdf (28.4 MB)", "O英文公版.ai (6.2 MB)"] }
               ];
               scanReport.value = {
                 totalScanned: 100,
-                importedCount: 18,
-                skippedCount: 82,
+                importedCount: 5,
+                skippedCount: 0,
                 discoveredLabels: [
                   "888講義DM印製/泗商影印社",
                   "888講義DM印製/講義已收到"
                 ],
                 scanLogs: mockLogs
               };
+
+              // 本地模擬即時更新工單
+              orders.value = [
+                { orderId: 'HIST-001', materialName: '國三上社會講義', isReprint: false, colorType: '黑白', studentCopies: 21, teacherCopies: 0, pdfPages: 126, dueDate: '08/27(四)', coverType: '公版封面', deliveryStatus: 'RECEIVED', distributedCopies: 0, unitPrice: 0.38, bindingCost: 20 },
+                { orderId: 'HIST-002', materialName: '學測數學講義B3', isReprint: false, colorType: '彩色', studentCopies: 26, teacherCopies: 1, pdfPages: 150, dueDate: '08/20(四)', coverType: '公版封面', deliveryStatus: 'RECEIVED', distributedCopies: 0, unitPrice: 0.9, bindingCost: 20 },
+                { orderId: 'HIST-003', materialName: '高二物理講義', isReprint: false, colorType: '黑白', studentCopies: 8, teacherCopies: 0, pdfPages: 96, dueDate: '08/20(四)', coverType: '公版封面', deliveryStatus: 'RECEIVED', distributedCopies: 0, unitPrice: 0.38, bindingCost: 20 },
+                { orderId: 'HIST-004', materialName: '學測數學講義B2', isReprint: true, colorType: '彩色', studentCopies: 2, teacherCopies: 0, pdfPages: 110, dueDate: '07/09(四)', coverType: '公版封面', deliveryStatus: 'RECEIVED', distributedCopies: 0, unitPrice: 0.9, bindingCost: 20 },
+                { orderId: 'HIST-005', materialName: '國一上英文講義', isReprint: false, colorType: '黑白', studentCopies: 20, teacherCopies: 0, pdfPages: 88, dueDate: '09/2(三)', coverType: '公版封面', deliveryStatus: 'PENDING', distributedCopies: 0, unitPrice: 0.38, bindingCost: 20 }
+              ];
+
+              currentTab.value = 'inventory';
               showScanResultModal.value = true;
-              triggerToast('掃描完成', '已從 Gmail 成功讀取信件詳細日誌！');
+              triggerToast('即時更新完成', '已從 Gmail 讀取信件並即時同步 5 筆講義至儀表板！');
             }, 800);
           }
         };
 
         const handleForceReloadScan = () => {
           if (confirm('確定要清空現有工單紀錄，並從 Gmail 寄件備份重新完整掃描分析所有郵件嗎？')) {
+            orders.value = [];
             triggerGmailScan(true);
           }
         };
@@ -1341,22 +1403,10 @@
           return singleBook * totalCopies;
         });
 
-        // 本機/同步資料夾檔案清單
-        const availableLocalFiles = ref([
-          { name: '115會考國文_9月後複習講義.pdf', sizeFormatted: '34.2 MB', isPdf: true, isAi: false, lastModifiedFormatted: '2026-08-20', detectedPages: 126 },
-          { name: 'O國文公版.ai', sizeFormatted: '5.8 MB', isPdf: false, isAi: true, lastModifiedFormatted: '2026-08-01', detectedPages: 0 },
-          { name: '高一英文暑期講義_B1.pdf', sizeFormatted: '28.1 MB', isPdf: true, isAi: false, lastModifiedFormatted: '2026-08-15', detectedPages: 153 },
-          { name: 'O英文公版.ai', sizeFormatted: '6.2 MB', isPdf: false, isAi: true, lastModifiedFormatted: '2026-08-01', detectedPages: 0 },
-          { name: '學測數學總複習_B3.pdf', sizeFormatted: '42.5 MB', isPdf: true, isAi: false, lastModifiedFormatted: '2026-08-10', detectedPages: 188 },
-          { name: 'O數學公版.ai', sizeFormatted: '5.1 MB', isPdf: false, isAi: true, lastModifiedFormatted: '2026-08-01', detectedPages: 0 }
-        ]);
-
-        const selectedAttachments = ref([
-          { name: '115會考國文_9月後複習講義.pdf', sizeFormatted: '34.2 MB', isPdf: true, detectedPages: 126 },
-          { name: 'O國文公版.ai', sizeFormatted: '5.8 MB', isPdf: false, detectedPages: 0 }
-        ]);
-
-        const loadedFolderInfo = ref({ name: 'Google 雲端硬碟同步講義庫' });
+        // 本機/同步資料夾檔案清單 (真實空狀態，由使用者選取電腦同步資料夾載入)
+        const availableLocalFiles = ref([]);
+        const selectedAttachments = ref([]);
+        const loadedFolderInfo = ref({ name: '尚未選取資料夾' });
         const showFilePickerModal = ref(false);
         const fileSearchQuery = ref('');
         const fileCategoryFilter = ref('all'); // all, pdf, cover
@@ -1525,57 +1575,8 @@
           });
         };
 
-        // 工單列表 (母子結構資料庫)
-        const orders = ref([
-          {
-            orderId: 'ORD-20260820-001',
-            materialName: '國三上國文講義',
-            isReprint: false,
-            colorType: '黑白',
-            studentCopies: 21,
-            teacherCopies: 0,
-            pdfPages: 126,
-            dueDate: '08/27(四)',
-            coverType: '公版封面',
-            deliveryStatus: 'RECEIVED',
-            mailStatus: 'SENT',
-            distributedCopies: 21,
-            unitPrice: 0.38,
-            bindingCost: 20
-          },
-          {
-            orderId: 'ORD-20260905-002',
-            materialName: '國三上國文講義',
-            isReprint: true,
-            colorType: '黑白',
-            studentCopies: 3,
-            teacherCopies: 0,
-            pdfPages: 126,
-            dueDate: '09/08(二)',
-            coverType: '公版封面',
-            deliveryStatus: 'RECEIVED',
-            mailStatus: 'SENT',
-            distributedCopies: 0,
-            unitPrice: 0.38,
-            bindingCost: 20
-          },
-          {
-            orderId: 'ORD-20260820-003',
-            materialName: '高一上英文講義',
-            isReprint: false,
-            colorType: '黑白/彩色',
-            studentCopies: 19,
-            teacherCopies: 1,
-            pdfPages: 153,
-            dueDate: '08/31(一)',
-            coverType: '公版封面',
-            deliveryStatus: 'RECEIVED',
-            mailStatus: 'SENT',
-            distributedCopies: 18,
-            unitPrice: 0.38,
-            bindingCost: 20
-          }
-        ]);
+        // 工單列表 (母子結構資料庫，預設為空，由 Google Sheets 或 Gmail 掃描載入真實資料)
+        const orders = ref([]);
 
         // 母子結構分組
         const groupedMaterials = computed(() => {
@@ -1705,25 +1706,8 @@
           updateCleanupBadge();
         };
 
-        // 空間清理清單
-        const cleanupCandidates = ref([
-          {
-            orderId: 'ORD-20260820-001',
-            materialName: '國三上國文講義',
-            subject: '[國三上國文講義][黑白][學21][08/27(四)][公版封面]',
-            sentTime: '2026-08-20 14:32',
-            attachmentCount: 2,
-            attachmentSizeMb: '40.0'
-          },
-          {
-            orderId: 'ORD-20260820-003',
-            materialName: '高一上英文講義',
-            subject: '[高一上英文講義][黑白/彩色][學19/教1][08/31(一)][公版封面]',
-            sentTime: '2026-08-20 16:15',
-            attachmentCount: 3,
-            attachmentSizeMb: '34.3'
-          }
-        ]);
+        // 空間清理清單 (預設為空，由後端取得已到貨信件)
+        const cleanupCandidates = ref([]);
 
         const updateCleanupBadge = () => {
           tabs.value.find(t => t.id === 'cleanup').badge = cleanupCandidates.value.length;
@@ -1752,39 +1736,13 @@
           updateCleanupBadge();
         };
 
-        // 廠商 Excel 核帳工作台
+        // 廠商 Excel 核帳工作台 (預設為空，由使用者上傳廠商結算 Excel 比對)
         const reconcileConfig = ref({
           bwPrice: 0.38,
           colorPrice: 0.9,
           bindingCost: 20
         });
-
-        const reconcilePairs = ref([
-          {
-            systemOrder: { materialName: '國三上國文講義', pdfPages: 126, studentCopies: 21, teacherCopies: 0, isReprint: false },
-            vendorRow: { rawName: '[國三上國文講義][黑白][學21]', pages: 126, copies: 21, totalAmount: 1428 },
-            status: 'MATCH',
-            statusText: '完全相符',
-            diffNote: '',
-            computedExpectedAmount: 1428
-          },
-          {
-            systemOrder: { materialName: '高一下數學講義B2', pdfPages: 195, studentCopies: 4, teacherCopies: 0, isReprint: true },
-            vendorRow: { rawName: '[加印][高一下數學講義B2][黑白][學4]', pages: 195, copies: 4, totalAmount: 420 },
-            status: 'MATCH',
-            statusText: '完全相符',
-            diffNote: '',
-            computedExpectedAmount: 420
-          },
-          {
-            systemOrder: { materialName: '高二物理暑期講義', pdfPages: 246, studentCopies: 23, teacherCopies: 0, isReprint: false },
-            vendorRow: { rawName: '[學測物理講義][黑白][學23]', pages: 246, copies: 23, totalAmount: 2852 },
-            status: 'DIFF',
-            statusText: '規格需確認',
-            diffNote: '廠商備註: 頁數過多需打釘 (封面費 $30)',
-            computedExpectedAmount: 2852
-          }
-        ]);
+        const reconcilePairs = ref([]);
 
         const totalVendorAmount = computed(() => {
           return reconcilePairs.value.reduce((acc, p) => acc + (p.vendorRow?.totalAmount || 0), 0);
@@ -1817,18 +1775,11 @@
           reader.readAsArrayBuffer(file);
         };
 
-        // 學生現場發放名單
-        const selectedMaterialForRoster = ref('國三上國文講義');
-        const rawRosterInput = ref('王小明\n李大華\n陳品均\n張浩廷\n林雅婷\n趙子龍\n黃建豪\n周杰倫\n蔡依林\n劉德華');
+        // 學生現場發放名單 (預設為空，由使用者貼上名單載入)
+        const selectedMaterialForRoster = ref('');
+        const rawRosterInput = ref('');
         const newStudentName = ref('');
-        const activeRoster = ref([
-          { name: '王小明', received: true, isNew: false },
-          { name: '李大華', received: true, isNew: false },
-          { name: '陳品均', received: true, isNew: false },
-          { name: '張浩廷', received: false, isNew: false }, // 請假
-          { name: '林雅婷', received: true, isNew: false },
-          { name: '許同學(試聽)', received: true, isNew: true }
-        ]);
+        const activeRoster = ref([]);
 
         const openDistributionTab = (group) => {
           selectedMaterialForRoster.value = group.materialName;
@@ -1869,16 +1820,15 @@
           triggerToast('設定已儲存', '通訊錄與費率參數已更新！');
         };
 
-        const loadOrders = () => {
+        const loadOrders = (silent = false) => {
           if (typeof google !== 'undefined' && google.script && google.script.run) {
             google.script.run
               .withSuccessHandler((res) => {
-                if (Array.isArray(res) && res.length > 0) {
-                  orders.value = res;
-                  updateCleanupBadge();
-                } else if (res && res.orders && Array.isArray(res.orders) && res.orders.length > 0) {
-                  orders.value = res.orders;
-                  updateCleanupBadge();
+                const list = Array.isArray(res) ? res : (res && res.orders && Array.isArray(res.orders) ? res.orders : []);
+                orders.value = list;
+                updateCleanupBadge();
+                if (!silent && list.length > 0) {
+                  triggerToast('已同步資料庫', `成功載入 ${list.length} 筆講義工單！`);
                 }
               })
               .withFailureHandler((err) => {
@@ -1886,7 +1836,7 @@
               })
               .getOrders();
           } else {
-            triggerToast('資料已更新', '最新工單與庫存狀態已同步');
+            if (!silent) triggerToast('資料已更新', '最新工單與庫存狀態已同步');
           }
         };
 

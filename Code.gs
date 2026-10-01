@@ -74,6 +74,7 @@ function getOrCreateDb() {
  * 讀取所有講義工單
  */
 function getOrders() {
+  SpreadsheetApp.flush();
   const { sheet } = getOrCreateDb();
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
@@ -84,27 +85,27 @@ function getOrders() {
     return {
       rowIndex: index + 2,
       orderId: r[0],
-      materialName: r[1],
+      materialName: r[1] || "未命名講義",
       isReprint: r[2] === true || r[2] === "TRUE",
-      colorType: r[3],
+      colorType: r[3] || "黑白",
       studentCopies: Number(r[4]) || 0,
       teacherCopies: Number(r[5]) || 0,
       pdfPages: Number(r[6]) || 0,
-      dueDate: r[7],
-      coverType: r[8],
-      note: r[9],
-      emailSubject: r[10],
-      gmailMessageId: r[11],
+      dueDate: r[7] || "",
+      coverType: r[8] || "公版封面",
+      note: r[9] || "",
+      emailSubject: r[10] || "",
+      gmailMessageId: r[11] || "",
       mailStatus: r[12] || "SENT", // SENT, TRASHED
       deliveryStatus: r[13] || "PENDING", // PENDING, RECEIVED
-      receivedAt: r[14],
+      receivedAt: r[14] || "",
       distributedCopies: Number(r[15]) || 0,
       unitPrice: Number(r[16]) || 0.38,
       bindingCost: Number(r[17]) || 20,
       extraCost: Number(r[18]) || 0,
       estimatedTotal: Number(r[19]) || 0,
       reconciled: r[20] === true || r[20] === "TRUE",
-      createdAt: r[21],
+      createdAt: r[21] || "",
       attachmentIds: r[22] ? String(r[22]).split(",") : [],
       rosterJson: r[23] || "[]"
     };
@@ -483,6 +484,7 @@ function scanAndImportGmailHistory(options) {
       const lastRow = sheet.getLastRow();
       if (lastRow > 1) {
         sheet.getRange(2, 1, lastRow - 1, 24).clearContent();
+        SpreadsheetApp.flush();
       }
     }
 
@@ -619,6 +621,9 @@ function scanAndImportGmailHistory(options) {
         scanLogs.push(logEntry);
       });
     });
+
+    // 強制將寫入的資料同步落盤，確保即時讀取最新狀態
+    SpreadsheetApp.flush();
 
     // 重新載入最新所有工單
     const allLatestOrders = getOrders();
