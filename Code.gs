@@ -570,15 +570,12 @@ function scanAndImportGmailHistory(options) {
           return;
         }
 
-        // 如果主旨或內文有備註提及頁數 (例如: 共126頁)
-        let detectedPages = parsed.pages || 0;
-        if (detectedPages === 0) {
-          const bodyText = msg.getPlainBody();
-          const pageMatch = subject.match(/共\s*(\d+)\s*頁/) || bodyText.match(/共\s*(\d+)\s*頁/);
-          if (pageMatch) {
-            detectedPages = parseInt(pageMatch[1], 10);
-          }
+        // 深度解析 PDF 附件二進位結構與內文，精準取得真實講義頁數
+        let detectedPages = extractPdfPagesFromMessage(msg, attachments, subject);
+        if (detectedPages === 0 && parsed.pages) {
+          detectedPages = parsed.pages;
         }
+        logEntry.detectedPages = detectedPages;
 
         const orderId = "HIST-" + Utilities.formatDate(msg.getDate(), "GMT+8", "yyyyMMdd-HHmmss");
         const copies = parsed.studentCopies + parsed.teacherCopies;
@@ -741,4 +738,205 @@ function parsePrintSubject(rawSubject) {
     note: extraNote,
     pages: pages
   };
+}
+
+/**
+ * 從郵件物件及其附件中深度解析真實講義頁數 (支援 PDF 二進位結構秒讀、檔名與內文提取)
+ * @param {GmailMessage} msg Gmail 郵件物件
+ * @param {Array<GmailAttachment>} attachments 附件陣列
+ * @param {string} subject 信件主旨
+ * @return {number} 解析出的頁數
+ */
+function extractPdfPagesFromMessage(msg, attachments, subject) {
+  let detectedPages = 0;
+
+  // 1. 優先從 PDF 附件的二進位結構直接秒讀 /Count 或 /N
+  if (attachments && attachments.length > 0) {
+    const pdfAttachments = attachments.filter(a => {
+      const name = a.getName().toLowerCase();
+      return name.endsWith('.pdf') || a.getContentType() === 'application/pdf';
+    });
+
+    // 若有多個 PDF，且有包含「封面」字樣，優先區分內頁講義與封面
+    const contentPdfs = pdfAttachments.filter(a => !a.getName().includes('封面'));
+    const targetPdfs = contentPdfs.length > 0 ? contentPdfs : pdfAttachments;
+
+    let totalPdfPages = 0;
+    targetPdfs.forEach(att => {
+      const pages = getPagesFromSinglePdfAttachment(att);
+      if (pages > 0) {
+        totalPdfPages += pages;
+      }
+    });
+
+    if (totalPdfPages > 0) {
+      return totalPdfPages;
+    }
+  }
+
+  // 2. 次選：從附件檔名匹配頁數 (如 xxx_126p.pdf, xxx_126頁.pdf)
+  if (attachments && attachments.length > 0) {
+    for (const att of attachments) {
+      const name = att.getName();
+      const fnMatch = name.match(/[\(\[_\-\s](\d{1,4})\s*(?:p|頁|pages)[\)\]_\-\s\.]/i) || name.match(/共\s*(\d{1,4})\s*頁/);
+      if (fnMatch) {
+        const p = parseInt(fnMatch[1], 10);
+        if (p > 0 && p < 3000) return p;
+      }
+    }
+  }
+
+  // 3. 第三層備援：從信件主旨與內文匹配
+  try {
+    const bodyText = msg ? msg.getPlainBody() : "";
+    const combinedText = (subject || "") + "\n" + bodyText;
+    
+    // 匹配 "共 126 頁", "126 頁", "內頁: 126", "頁數: 126", "126p"
+    const patterns = [
+      /共\s*(\d{1,4})\s*頁/,
+      /(?:內頁|頁數|總頁數)\s*[:：]?\s*(\d{1,4})/,
+      /\[\s*(\d{1,4})\s*頁\s*\]/,
+      /【\s*(\d{1,4})\s*頁\s*】/,
+      /(?:P|p)\s*[:：]?\s*(\d{1,4})/
+    ];
+
+    for (const pat of patterns) {
+      const m = combinedText.match(pat);
+      if (m) {
+        const p = parseInt(m[1], 10);
+        if (p > 0 && p < 3000) return p;
+      }
+    }
+  } catch (e) {}
+
+  return 0;
+}
+
+/**
+ * 從單一 PDF 附件解析二進位字串取得頁數
+ */
+function getPagesFromSinglePdfAttachment(att) {
+  try {
+    const bytes = att.getBytes();
+    if (!bytes || bytes.length === 0) return 0;
+
+    // 為顧及執行效能與 Apps Script 記憶體限制，讀取前 350KB 與末尾 100KB
+    const sampleLen = Math.min(bytes.length, 350000);
+    const headBlob = Utilities.newBlob(bytes.slice(0, sampleLen));
+    const headStr = headBlob.getDataAsString("ISO-8859-1");
+
+    let pages = extractPagesFromPdfText(headStr);
+    if (pages > 0) return pages;
+
+    // 若開頭沒找到，嘗試末尾 100KB (通常包含 Pages xref)
+    if (bytes.length > sampleLen) {
+      const tailStart = Math.max(0, bytes.length - 100000);
+      const tailBlob = Utilities.newBlob(bytes.slice(tailStart));
+      const tailStr = tailBlob.getDataAsString("ISO-8859-1");
+      pages = extractPagesFromPdfText(tailStr);
+      if (pages > 0) return pages;
+    }
+
+    return 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+/**
+ * 正規表示式匹配 PDF 中的 /Count 或 /N
+ */
+function extractPagesFromPdfText(text) {
+  if (!text) return 0;
+  let maxPages = 0;
+
+  // 1. 匹配 /Type /Pages ... /Count N
+  const typePagesMatches = text.match(/\/Type\s*\/Pages[\s\S]{0,120}?\/Count\s+(\d+)/g);
+  if (typePagesMatches) {
+    typePagesMatches.forEach(m => {
+      const numMatch = m.match(/\/Count\s+(\d+)/);
+      if (numMatch) {
+        const val = parseInt(numMatch[1], 10);
+        if (val > maxPages && val < 4000) maxPages = val;
+      }
+    });
+  }
+
+  // 2. 匹配 /Linearized 1 ... /N <頁數>
+  const linMatches = text.match(/\/Linearized\s+1[\s\S]{0,120}?\/N\s+(\d+)/);
+  if (linMatches) {
+    const val = parseInt(linMatches[1], 10);
+    if (val > maxPages && val < 4000) maxPages = val;
+  }
+
+  // 3. 匹配一般 /Count N
+  if (maxPages === 0) {
+    const countMatches = text.match(/\/Count\s+(\d+)/g);
+    if (countMatches) {
+      countMatches.forEach(m => {
+        const val = parseInt(m.replace(/\/Count\s+/, ''), 10);
+        if (val > maxPages && val < 4000) maxPages = val;
+      });
+    }
+  }
+
+  return maxPages;
+}
+
+/**
+ * 一鍵修復補齊現有試算表中頁數為 0 的工單 (依據 Gmail messageId 讀取原信件附件)
+ */
+function repairZeroPageOrders() {
+  try {
+    const { sheet } = getOrCreateDb();
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return { success: false, message: "目前尚無任何工單資料" };
+
+    let updatedCount = 0;
+    for (let i = 1; i < data.length; i++) {
+      const currentPages = Number(data[i][6]) || 0;
+      const messageId = data[i][11];
+      const subject = data[i][10];
+      const studentCopies = Number(data[i][4]) || 0;
+      const teacherCopies = Number(data[i][5]) || 0;
+      const colorType = data[i][3] || "黑白";
+      const unitP = colorType === "彩色" ? 0.9 : 0.38;
+      const bindingCost = Number(data[i][17]) || 20;
+
+      // 若頁數為 0 且有 Gmail 訊息 ID
+      if (currentPages === 0 && messageId) {
+        try {
+          const msg = GmailApp.getMessageById(messageId);
+          if (msg) {
+            const attachments = msg.getAttachments();
+            const realPages = extractPdfPagesFromMessage(msg, attachments, subject);
+            if (realPages > 0) {
+              const copies = studentCopies + teacherCopies;
+              const estTotal = (Math.round((realPages * unitP) + bindingCost) * copies);
+
+              // G 欄為欄位 7 (PDF 頁數)
+              sheet.getRange(i + 1, 7).setValue(realPages);
+              // T 欄為欄位 20 (預估總金額)
+              sheet.getRange(i + 1, 20).setValue(estTotal);
+              updatedCount++;
+            }
+          }
+        } catch (e) {
+          Logger.log("修復工單頁數失敗 (Row " + (i + 1) + "): " + e.message);
+        }
+      }
+    }
+
+    SpreadsheetApp.flush();
+    const allLatestOrders = getOrders();
+
+    return {
+      success: true,
+      updatedCount: updatedCount,
+      allOrders: allLatestOrders,
+      message: `修復完成！已成功為 ${updatedCount} 筆工單讀取並補齊真實 PDF 頁數與金額！`
+    };
+  } catch (err) {
+    return { success: false, message: "修復失敗：" + err.message };
+  }
 }
