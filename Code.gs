@@ -471,10 +471,21 @@ function markOrdersReconciled(orderIds) {
 
 /**
  * 深度掃描 Gmail 寄件備份中的歷史講義印刷信件，自動辨識標籤並批次記錄至資料庫
+ * @param {Object|string} options 查詢條件或設定 { query, forceReload }
  */
-function scanAndImportGmailHistory(customQuery) {
+function scanAndImportGmailHistory(options) {
   try {
+    const opts = (typeof options === 'object' && options !== null) ? options : { query: options, forceReload: false };
     const { sheet } = getOrCreateDb();
+
+    // 若要求強制重新掃描，清空標題行以下的舊資料
+    if (opts.forceReload === true) {
+      const lastRow = sheet.getLastRow();
+      if (lastRow > 1) {
+        sheet.getRange(2, 1, lastRow - 1, 24).clearContent();
+      }
+    }
+
     const existingData = sheet.getDataRange().getValues();
     const existingMsgIds = new Set();
     const existingSubjects = new Set();
@@ -485,22 +496,22 @@ function scanAndImportGmailHistory(customQuery) {
     }
 
     // 搜尋語法：優先依據講義標籤或影印社信件搜尋
-    let searchQuery = customQuery || 'label:"888講義DM印製" OR label:"888講義DM印製/泗商影印社" OR subject:"[公版封面]" OR subject:"[黑白]" OR subject:"[彩色]"';
+    let searchQuery = opts.query || 'label:"888講義DM印製" OR label:"888講義DM印製/泗商影印社" OR subject:"[公版封面]" OR subject:"[黑白]" OR subject:"[彩色]"';
     
-    // 獲取信件執行緒 (最多抓取前 100 筆)
+    // 獲取信件執行緒 (最多抓取前 150 筆)
     let threads = [];
     try {
-      threads = GmailApp.search(searchQuery, 0, 100);
+      threads = GmailApp.search(searchQuery, 0, 150);
     } catch (e) {
       // 若標籤不存在則寬鬆搜尋
-      threads = GmailApp.search('subject:"[黑白]" OR subject:"[彩色]" OR subject:"[加印]"', 0, 100);
+      threads = GmailApp.search('subject:"[黑白]" OR subject:"[彩色]" OR subject:"[加印]"', 0, 150);
     }
 
     const discoveredLabels = new Set();
-    const discoveredPatterns = [];
+    const scanLogs = []; // 保存每一封信件的完整日誌
     let importedCount = 0;
     let skippedCount = 0;
-    const newRecords = [];
+    let scanIndex = 0;
 
     threads.forEach(thread => {
       // 取得該討論串所有標籤
@@ -512,29 +523,52 @@ function scanAndImportGmailHistory(customQuery) {
 
       const msgs = thread.getMessages();
       msgs.forEach(msg => {
+        scanIndex++;
         const msgId = msg.getId();
         const subject = msg.getSubject().trim();
+        const sentDate = Utilities.formatDate(msg.getDate(), "GMT+8", "yyyy-MM-dd HH:mm");
 
-        // 避免重複匯入
-        if (existingMsgIds.has(msgId) || existingSubjects.has(subject)) {
-          skippedCount++;
-          return;
-        }
+        // 取得附件清單與大小
+        const attachments = msg.getAttachments();
+        const attDetails = attachments.map(a => {
+          const mb = (a.getSize() / (1024 * 1024)).toFixed(1);
+          return `${a.getName()} (${mb} MB)`;
+        });
 
         // 解析主旨格式
         const parsed = parsePrintSubject(subject);
-        if (!parsed.isValid) {
-          return; // 不是印刷相關信件
+
+        const logEntry = {
+          index: scanIndex,
+          date: sentDate,
+          subject: subject,
+          materialName: parsed.isValid ? parsed.materialName : "非規範主旨",
+          isReprint: parsed.isValid ? parsed.isReprint : false,
+          copies: parsed.isValid ? (parsed.teacherCopies > 0 ? `學${parsed.studentCopies}/教${parsed.teacherCopies}` : `學${parsed.studentCopies}`) : "-",
+          colorType: parsed.isValid ? parsed.colorType : "-",
+          dueDate: parsed.isValid ? parsed.dueDate : "-",
+          labels: labels,
+          deliveryStatus: isReceivedByLabel ? "已收到" : "待收書",
+          attachments: attDetails,
+          isValid: parsed.isValid,
+          importStatus: ""
+        };
+
+        // 檢查是否已存在
+        if (existingMsgIds.has(msgId) || existingSubjects.has(subject)) {
+          skippedCount++;
+          logEntry.importStatus = "已存在資料庫 (已跳過)";
+          scanLogs.push(logEntry);
+          return;
         }
 
-        // 取得附件資訊
-        const attachments = msg.getAttachments();
-        const attNames = attachments.map(a => a.getName());
-        let totalAttBytes = 0;
-        attachments.forEach(a => totalAttBytes += a.getSize());
-        const totalSizeMb = (totalAttBytes / (1024 * 1024)).toFixed(1);
+        if (!parsed.isValid) {
+          logEntry.importStatus = "非印刷格式 (略過)";
+          scanLogs.push(logEntry);
+          return;
+        }
 
-        // 如果主旨有備註提及頁數 (例如: 共126頁)
+        // 如果主旨或內文有備註提及頁數 (例如: 共126頁)
         let detectedPages = parsed.pages || 0;
         if (detectedPages === 0) {
           const bodyText = msg.getPlainBody();
@@ -544,10 +578,7 @@ function scanAndImportGmailHistory(customQuery) {
           }
         }
 
-        const sentDate = Utilities.formatDate(msg.getDate(), "GMT+8", "yyyy-MM-dd HH:mm:ss");
         const orderId = "HIST-" + Utilities.formatDate(msg.getDate(), "GMT+8", "yyyyMMdd-HHmmss");
-
-        // 預估費用
         const copies = parsed.studentCopies + parsed.teacherCopies;
         const unitP = parsed.colorType === '彩色' ? 0.9 : 0.38;
         const estTotal = (Math.round((detectedPages * unitP) + 20) * copies);
@@ -575,7 +606,7 @@ function scanAndImportGmailHistory(customQuery) {
           estTotal,
           false,
           sentDate,
-          attNames.join(", "),
+          attDetails.join(", "),
           "[]"
         ];
 
@@ -584,16 +615,13 @@ function scanAndImportGmailHistory(customQuery) {
         existingSubjects.add(subject);
         importedCount++;
 
-        discoveredPatterns.push({
-          subject: subject,
-          materialName: parsed.materialName,
-          copies: copies,
-          isReprint: parsed.isReprint,
-          labels: labels,
-          deliveryStatus: isReceivedByLabel ? "已收到" : "待收書"
-        });
+        logEntry.importStatus = "✅ 成功匯入資料庫";
+        scanLogs.push(logEntry);
       });
     });
+
+    // 重新載入最新所有工單
+    const allLatestOrders = getOrders();
 
     return {
       success: true,
@@ -601,8 +629,9 @@ function scanAndImportGmailHistory(customQuery) {
       skippedCount: skippedCount,
       totalScanned: threads.length,
       discoveredLabels: Array.from(discoveredLabels),
-      patterns: discoveredPatterns.slice(0, 10), // 回傳前10筆範例供前端展示
-      message: `掃描完成！共分析 ${threads.length} 串郵件，成功匯入 ${importedCount} 筆歷史送印紀錄（跳過重複 ${skippedCount} 筆）`
+      scanLogs: scanLogs, // 包含每封信的序號、標題、附件與標籤詳細日誌
+      allOrders: allLatestOrders, // 包含所有最新工單
+      message: `掃描完成！共分析 ${threads.length} 串郵件，成功匯入 ${importedCount} 筆，已存在 ${skippedCount} 筆。`
     };
   } catch (err) {
     return { success: false, message: "掃描失敗: " + err.message };
