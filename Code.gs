@@ -489,12 +489,15 @@ function scanAndImportGmailHistory(options) {
     }
 
     const existingData = sheet.getDataRange().getValues();
-    const existingMsgIds = new Set();
-    const existingSubjects = new Set();
+    const existingRowMap = new Map(); // key -> { rowIndex, pages }
 
     for (let i = 1; i < existingData.length; i++) {
-      if (existingData[i][11]) existingMsgIds.add(String(existingData[i][11]));
-      if (existingData[i][10]) existingSubjects.add(String(existingData[i][10]));
+      const msgId = String(existingData[i][11] || '').trim();
+      const subj = String(existingData[i][10] || '').trim();
+      const pages = Number(existingData[i][6]) || 0;
+      const info = { rowIndex: i + 1, pages: pages };
+      if (msgId) existingRowMap.set(msgId, info);
+      if (subj) existingRowMap.set(subj, info);
     }
 
     // 搜尋語法：優先依據講義標籤或影印社信件搜尋
@@ -556,8 +559,31 @@ function scanAndImportGmailHistory(options) {
           importStatus: ""
         };
 
-        // 檢查是否已存在
-        if (existingMsgIds.has(msgId) || existingSubjects.has(subject)) {
+        // 檢查是否已存在於試算表中
+        const existingInfo = existingRowMap.get(msgId) || existingRowMap.get(subject);
+        if (existingInfo) {
+          // 若已存在但試算表內頁數為 0，且本次能解析出頁數，立即自動就地補齊！
+          if (existingInfo.pages === 0) {
+            let detectedPages = extractPdfPagesFromMessage(msg, attachments, subject);
+            if (detectedPages === 0 && parsed.pages) detectedPages = parsed.pages;
+
+            if (detectedPages > 0) {
+              const copies = (parsed.studentCopies || 1) + (parsed.teacherCopies || 0);
+              const unitP = parsed.colorType === '彩色' ? 0.9 : 0.38;
+              const estTotal = (Math.round((detectedPages * unitP) + 20) * copies);
+
+              // G 欄為欄位 7 (PDF 頁數), T 欄為欄位 20 (預估總金額)
+              sheet.getRange(existingInfo.rowIndex, 7).setValue(detectedPages);
+              sheet.getRange(existingInfo.rowIndex, 20).setValue(estTotal);
+              existingInfo.pages = detectedPages;
+
+              logEntry.detectedPages = detectedPages;
+              logEntry.importStatus = `🔄 已自動補齊頁數 (${detectedPages} 頁)`;
+              scanLogs.push(logEntry);
+              return;
+            }
+          }
+
           skippedCount++;
           logEntry.importStatus = "已存在資料庫 (已跳過)";
           scanLogs.push(logEntry);
@@ -813,32 +839,32 @@ function extractPdfPagesFromMessage(msg, attachments, subject) {
 }
 
 /**
- * 從單一 PDF 附件解析二進位字串取得頁數
+ * 從單一 PDF 附件解析二進位字串取得頁數 (雙重演算法：Count 樹狀提取 + Type Page 獨立頁面統計)
  */
 function getPagesFromSinglePdfAttachment(att) {
   try {
-    const bytes = att.getBytes();
-    if (!bytes || bytes.length === 0) return 0;
+    let pdfStr = "";
+    try {
+      pdfStr = att.getDataAsString("ISO-8859-1");
+    } catch (e1) {
+      pdfStr = att.getDataAsString();
+    }
 
-    // 為顧及執行效能與 Apps Script 記憶體限制，讀取前 350KB 與末尾 100KB
-    const sampleLen = Math.min(bytes.length, 350000);
-    const headBlob = Utilities.newBlob(bytes.slice(0, sampleLen));
-    const headStr = headBlob.getDataAsString("ISO-8859-1");
+    if (!pdfStr || pdfStr.length === 0) return 0;
 
-    let pages = extractPagesFromPdfText(headStr);
+    // 1. 匹配 /Count 或 /N
+    let pages = extractPagesFromPdfText(pdfStr);
     if (pages > 0) return pages;
 
-    // 若開頭沒找到，嘗試末尾 100KB (通常包含 Pages xref)
-    if (bytes.length > sampleLen) {
-      const tailStart = Math.max(0, bytes.length - 100000);
-      const tailBlob = Utilities.newBlob(bytes.slice(tailStart));
-      const tailStr = tailBlob.getDataAsString("ISO-8859-1");
-      pages = extractPagesFromPdfText(tailStr);
-      if (pages > 0) return pages;
+    // 2. 匹配獨立頁面定義 /Type /Page (單數 Page，排除 /Pages)
+    const pageMatches = pdfStr.match(/\/Type\s*\/Page[^s\w]/g);
+    if (pageMatches && pageMatches.length > 0 && pageMatches.length < 3000) {
+      return pageMatches.length;
     }
 
     return 0;
   } catch (e) {
+    Logger.log("讀取單一 PDF 頁數失敗: " + att.getName() + " - " + e.message);
     return 0;
   }
 }
@@ -850,8 +876,9 @@ function extractPagesFromPdfText(text) {
   if (!text) return 0;
   let maxPages = 0;
 
-  // 1. 匹配 /Type /Pages ... /Count N
-  const typePagesMatches = text.match(/\/Type\s*\/Pages[\s\S]{0,120}?\/Count\s+(\d+)/g);
+  // 1. 匹配 /Type /Pages ... /Count N 或 /Count N ... /Type /Pages
+  const typePagesMatches = text.match(/\/Type\s*\/Pages[\s\S]{0,150}?\/Count\s+(\d+)/g) || 
+                           text.match(/\/Count\s+(\d+)[\s\S]{0,150}?\/Type\s*\/Pages/g);
   if (typePagesMatches) {
     typePagesMatches.forEach(m => {
       const numMatch = m.match(/\/Count\s+(\d+)/);
@@ -863,7 +890,7 @@ function extractPagesFromPdfText(text) {
   }
 
   // 2. 匹配 /Linearized 1 ... /N <頁數>
-  const linMatches = text.match(/\/Linearized\s+1[\s\S]{0,120}?\/N\s+(\d+)/);
+  const linMatches = text.match(/\/Linearized\s+1[\s\S]{0,150}?\/N\s+(\d+)/);
   if (linMatches) {
     const val = parseInt(linMatches[1], 10);
     if (val > maxPages && val < 4000) maxPages = val;
@@ -884,7 +911,7 @@ function extractPagesFromPdfText(text) {
 }
 
 /**
- * 一鍵修復補齊現有試算表中頁數為 0 的工單 (依據 Gmail messageId 讀取原信件附件)
+ * 一鍵修復補齊現有試算表中頁數為 0 的工單 (依據 Gmail messageId 或主旨讀取原信件附件)
  */
 function repairZeroPageOrders() {
   try {
@@ -893,25 +920,47 @@ function repairZeroPageOrders() {
     if (data.length <= 1) return { success: false, message: "目前尚無任何工單資料" };
 
     let updatedCount = 0;
+    Logger.log("=== 開始執行 0 頁工單自動修復作業 ===");
+
     for (let i = 1; i < data.length; i++) {
       const currentPages = Number(data[i][6]) || 0;
-      const messageId = data[i][11];
-      const subject = data[i][10];
+      const messageId = String(data[i][11] || '').trim();
+      const subject = String(data[i][10] || '').trim();
+      const materialName = data[i][1] || '講義';
       const studentCopies = Number(data[i][4]) || 0;
       const teacherCopies = Number(data[i][5]) || 0;
       const colorType = data[i][3] || "黑白";
       const unitP = colorType === "彩色" ? 0.9 : 0.38;
       const bindingCost = Number(data[i][17]) || 20;
 
-      // 若頁數為 0 且有 Gmail 訊息 ID
-      if (currentPages === 0 && messageId) {
-        try {
-          const msg = GmailApp.getMessageById(messageId);
-          if (msg) {
+      // 若頁數為 0
+      if (currentPages === 0) {
+        let msg = null;
+
+        // 1. 優先依據 messageId 讀取信件
+        if (messageId) {
+          try {
+            msg = GmailApp.getMessageById(messageId);
+          } catch (e) {}
+        }
+
+        // 2. 備援：若找不到則依主旨精確搜尋
+        if (!msg && subject) {
+          try {
+            const threads = GmailApp.search(`subject:"${subject}"`, 0, 1);
+            if (threads.length > 0) {
+              const msgs = threads[0].getMessages();
+              msg = msgs[msgs.length - 1];
+            }
+          } catch (e) {}
+        }
+
+        if (msg) {
+          try {
             const attachments = msg.getAttachments();
             const realPages = extractPdfPagesFromMessage(msg, attachments, subject);
             if (realPages > 0) {
-              const copies = studentCopies + teacherCopies;
+              const copies = (studentCopies || 1) + (teacherCopies || 0);
               const estTotal = (Math.round((realPages * unitP) + bindingCost) * copies);
 
               // G 欄為欄位 7 (PDF 頁數)
@@ -919,10 +968,15 @@ function repairZeroPageOrders() {
               // T 欄為欄位 20 (預估總金額)
               sheet.getRange(i + 1, 20).setValue(estTotal);
               updatedCount++;
+              Logger.log(`[修復成功] 第 ${i + 1} 列 【${materialName}】: 解析成功 ${realPages} 頁，更新金額 $${estTotal}`);
+            } else {
+              Logger.log(`[略過] 第 ${i + 1} 列 【${materialName}】: 附件中未找到可解析之 PDF 頁數`);
             }
+          } catch (e) {
+            Logger.log(`[異常] 第 ${i + 1} 列 【${materialName}】: ${e.message}`);
           }
-        } catch (e) {
-          Logger.log("修復工單頁數失敗 (Row " + (i + 1) + "): " + e.message);
+        } else {
+          Logger.log(`[未找到郵件] 第 ${i + 1} 列 【${materialName}】: ID ${messageId}`);
         }
       }
     }
@@ -930,13 +984,36 @@ function repairZeroPageOrders() {
     SpreadsheetApp.flush();
     const allLatestOrders = getOrders();
 
+    const msg = `修復完成！已成功為 ${updatedCount} 筆工單讀取並補齊真實 PDF 頁數與金額！`;
+    Logger.log(msg);
     return {
       success: true,
       updatedCount: updatedCount,
       allOrders: allLatestOrders,
-      message: `修復完成！已成功為 ${updatedCount} 筆工單讀取並補齊真實 PDF 頁數與金額！`
+      message: msg
     };
   } catch (err) {
+    Logger.log("修復失敗: " + err.message);
     return { success: false, message: "修復失敗：" + err.message };
   }
+}
+
+/**
+ * 【Apps Script 編輯器專用】一鍵修復試算表中所有 PDF 頁數為 0 的工單
+ * 請在 Apps Script 上方函式選單中選擇此函式並點擊「執行」
+ */
+function RUN_REPAIR_ZERO_PAGES() {
+  const result = repairZeroPageOrders();
+  Logger.log(JSON.stringify(result));
+  return result;
+}
+
+/**
+ * 【Apps Script 編輯器專用】一鍵完整重新掃描 Gmail 並覆蓋寫入試算表 (含 PDF 頁數深度讀取)
+ * 請在 Apps Script 上方函式選單中選擇此函式並點擊「執行」
+ */
+function RUN_FULL_RESCAN() {
+  const result = scanAndImportGmailHistory({ forceReload: true });
+  Logger.log(JSON.stringify(result));
+  return result;
 }
