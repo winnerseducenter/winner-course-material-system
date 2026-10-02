@@ -422,7 +422,7 @@
           </div>
           <div class="flex items-center space-x-2">
             <button 
-              @click="triggerGmailScan" 
+              @click="triggerGmailScan(false)" 
               :disabled="isScanningGmail"
               class="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs font-bold rounded-xl shadow-sm flex items-center space-x-1.5 transition-all disabled:opacity-50"
               title="掃描 Gmail 寄件備份，解析所有歷史送印講義、標籤與加印紀錄"
@@ -1333,38 +1333,45 @@
         });
 
         const triggerGmailScan = (forceReload = false) => {
+          const isForce = (forceReload === true);
           isScanningGmail.value = true;
-          triggerToast('開始掃描', forceReload ? '正在清除舊資料並重新完整掃描 Gmail...' : '正在掃描 Gmail 歷史送印信件與標籤...');
+          triggerToast('開始掃描', isForce ? '正在清除舊資料並重新完整掃描 Gmail...' : '正在掃描 Gmail 歷史送印信件與標籤...');
 
           if (typeof google !== 'undefined' && google.script && google.script.run) {
-            google.script.run
-              .withSuccessHandler((res) => {
-                isScanningGmail.value = false;
-                if (res && res.success) {
-                  scanReport.value = res;
-                  // 若後端有即時回傳全部工單，直接更新前端畫面
-                  if (res.allOrders && Array.isArray(res.allOrders)) {
-                    orders.value = res.allOrders;
+            try {
+              google.script.run
+                .withSuccessHandler((res) => {
+                  isScanningGmail.value = false;
+                  if (res && res.success) {
+                    scanReport.value = res;
+                    // 若後端有即時回傳全部工單，直接更新前端畫面
+                    if (res.allOrders && Array.isArray(res.allOrders)) {
+                      orders.value = res.allOrders;
+                    }
+                    // 雙重保證向試算表請求最新工單
+                    loadOrders(true);
+                    loadCleanupList();
+                    updateCleanupBadge();
+
+                    // 自動切換到講義庫存分頁，讓使用者立刻看到母子講義卡片
+                    currentTab.value = 'inventory';
+
+                    triggerToast('即時更新完成', `已成功同步 ${orders.value.length} 筆講義至系統資料庫！`);
+                    showScanResultModal.value = true;
+                  } else {
+                    triggerToast('掃描失敗', res ? res.message : '未知錯誤', 'error');
                   }
-                  // 雙重保證向試算表請求最新工單
-                  loadOrders(true);
-                  loadCleanupList();
-                  updateCleanupBadge();
-
-                  // 自動切換到講義庫存分頁，讓使用者立刻看到母子講義卡片
-                  currentTab.value = 'inventory';
-
-                  triggerToast('即時更新完成', `已成功同步 ${orders.value.length} 筆講義至系統資料庫！`);
-                  showScanResultModal.value = true;
-                } else {
-                  triggerToast('掃描失敗', res ? res.message : '未知錯誤', 'error');
-                }
-              })
-              .withFailureHandler((err) => {
-                isScanningGmail.value = false;
-                triggerToast('掃描發生錯誤', err.message, 'error');
-              })
-              .scanAndImportGmailHistory({ forceReload: forceReload });
+                })
+                .withFailureHandler((err) => {
+                  isScanningGmail.value = false;
+                  triggerToast('掃描發生錯誤', err ? err.message : '執行失敗', 'error');
+                })
+                .scanAndImportGmailHistory({ forceReload: isForce });
+            } catch (err) {
+              isScanningGmail.value = false;
+              triggerToast('發送失敗', err.message, 'error');
+            }
+          }
           } else {
             // 本地模擬學習歷史格式與標籤 (基於截圖真實資料)
             setTimeout(() => {

@@ -484,11 +484,20 @@ function markOrdersReconciled(orderIds) {
  */
 function scanAndImportGmailHistory(options) {
   try {
-    const opts = (typeof options === 'object' && options !== null) ? options : { query: options, forceReload: false };
+    let forceReload = false;
+    let query = "";
+    if (typeof options === "boolean") {
+      forceReload = options;
+    } else if (typeof options === "string") {
+      query = options;
+    } else if (typeof options === "object" && options !== null) {
+      forceReload = options.forceReload === true;
+      query = options.query || "";
+    }
     const { sheet } = getOrCreateDb();
 
     // 若要求強制重新掃描，清空標題行以下的舊資料
-    if (opts.forceReload === true) {
+    if (forceReload === true) {
       const lastRow = sheet.getLastRow();
       if (lastRow > 1) {
         sheet.getRange(2, 1, lastRow - 1, 24).clearContent();
@@ -509,7 +518,7 @@ function scanAndImportGmailHistory(options) {
     }
 
     // 搜尋語法：優先依據講義標籤或影印社信件搜尋
-    let searchQuery = opts.query || 'label:"888講義DM印製" OR label:"888講義DM印製/泗商影印社" OR subject:"[公版封面]" OR subject:"[黑白]" OR subject:"[彩色]"';
+    let searchQuery = query || 'label:"888講義DM印製" OR label:"888講義DM印製/泗商影印社" OR subject:"[公版封面]" OR subject:"[黑白]" OR subject:"[彩色]"';
     
     // 獲取信件執行緒 (最多抓取前 150 筆)
     let threads = [];
