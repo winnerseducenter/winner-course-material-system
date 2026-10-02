@@ -70,6 +70,14 @@ function getOrCreateDb() {
   return { ss, sheet };
 }
 
+function formatDateSafe(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, "GMT+8", "yyyy-MM-dd HH:mm");
+  }
+  return String(val);
+}
+
 /**
  * 讀取所有講義工單
  */
@@ -84,30 +92,30 @@ function getOrders() {
   return rows.map((r, index) => {
     return {
       rowIndex: index + 2,
-      orderId: r[0],
-      materialName: r[1] || "未命名講義",
+      orderId: String(r[0] || ""),
+      materialName: String(r[1] || "未命名講義"),
       isReprint: r[2] === true || r[2] === "TRUE",
-      colorType: r[3] || "黑白",
+      colorType: String(r[3] || "黑白"),
       studentCopies: Number(r[4]) || 0,
       teacherCopies: Number(r[5]) || 0,
       pdfPages: Number(r[6]) || 0,
-      dueDate: r[7] || "",
-      coverType: r[8] || "公版封面",
-      note: r[9] || "",
-      emailSubject: r[10] || "",
-      gmailMessageId: r[11] || "",
-      mailStatus: r[12] || "SENT", // SENT, TRASHED
-      deliveryStatus: r[13] || "PENDING", // PENDING, RECEIVED
-      receivedAt: r[14] || "",
+      dueDate: String(r[7] || ""),
+      coverType: String(r[8] || "公版封面"),
+      note: String(r[9] || ""),
+      emailSubject: String(r[10] || ""),
+      gmailMessageId: String(r[11] || ""),
+      mailStatus: String(r[12] || "SENT"), // SENT, TRASHED
+      deliveryStatus: String(r[13] || "PENDING"), // PENDING, RECEIVED
+      receivedAt: formatDateSafe(r[14]),
       distributedCopies: Number(r[15]) || 0,
       unitPrice: Number(r[16]) || 0.38,
       bindingCost: Number(r[17]) || 20,
       extraCost: Number(r[18]) || 0,
       estimatedTotal: Number(r[19]) || 0,
       reconciled: r[20] === true || r[20] === "TRUE",
-      createdAt: r[21] || "",
+      createdAt: formatDateSafe(r[21]),
       attachmentIds: r[22] ? String(r[22]).split(",") : [],
-      rosterJson: r[23] || "[]"
+      rosterJson: String(r[23] || "[]")
     };
   });
 }
@@ -636,8 +644,8 @@ function scanAndImportGmailHistory(options) {
         ];
 
         sheet.appendRow(row);
-        existingMsgIds.add(msgId);
-        existingSubjects.add(subject);
+        existingRowMap.set(msgId, { rowIndex: sheet.getLastRow(), pages: detectedPages });
+        existingRowMap.set(subject, { rowIndex: sheet.getLastRow(), pages: detectedPages });
         importedCount++;
 
         logEntry.importStatus = "✅ 成功匯入資料庫";
@@ -999,21 +1007,40 @@ function repairZeroPageOrders() {
 }
 
 /**
- * 【Apps Script 編輯器專用】一鍵修復試算表中所有 PDF 頁數為 0 的工單
- * 請在 Apps Script 上方函式選單中選擇此函式並點擊「執行」
+ * 直接更新指定講義的所有工單頁數與預估金額 (支援前端畫面上即時編輯落盤)
  */
-function RUN_REPAIR_ZERO_PAGES() {
-  const result = repairZeroPageOrders();
-  Logger.log(JSON.stringify(result));
-  return result;
-}
+function updateMaterialPages(materialName, newPages) {
+  try {
+    const { sheet } = getOrCreateDb();
+    const data = sheet.getDataRange().getValues();
+    const p = Number(newPages) || 0;
+    let updatedRows = 0;
 
-/**
- * 【Apps Script 編輯器專用】一鍵完整重新掃描 Gmail 並覆蓋寫入試算表 (含 PDF 頁數深度讀取)
- * 請在 Apps Script 上方函式選單中選擇此函式並點擊「執行」
- */
-function RUN_FULL_RESCAN() {
-  const result = scanAndImportGmailHistory({ forceReload: true });
-  Logger.log(JSON.stringify(result));
-  return result;
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][1]).trim() === String(materialName).trim()) {
+        const studentCopies = Number(data[i][4]) || 0;
+        const teacherCopies = Number(data[i][5]) || 0;
+        const colorType = data[i][3] || "黑白";
+        const unitP = colorType === "彩色" ? 0.9 : 0.38;
+        const bindingCost = Number(data[i][17]) || 20;
+        const copies = (studentCopies || 1) + (teacherCopies || 0);
+        const estTotal = (Math.round((p * unitP) + bindingCost) * copies);
+
+        // G 欄為欄位 7 (PDF 頁數), T 欄為欄位 20 (預估總金額)
+        sheet.getRange(i + 1, 7).setValue(p);
+        sheet.getRange(i + 1, 20).setValue(estTotal);
+        updatedRows++;
+      }
+    }
+
+    SpreadsheetApp.flush();
+    const allLatestOrders = getOrders();
+    return {
+      success: true,
+      allOrders: allLatestOrders,
+      message: `已將【${materialName}】的頁數更新為 ${p} 頁，共同步 ${updatedRows} 筆工單！`
+    };
+  } catch (err) {
+    return { success: false, message: "更新頁數失敗：" + err.message };
+  }
 }

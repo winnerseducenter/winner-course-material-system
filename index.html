@@ -481,7 +481,19 @@
                     {{ group.colorType }}
                   </span>
                   <h3 class="text-base font-bold text-slate-800 mt-1.5">{{ group.materialName }}</h3>
-                  <p class="text-xs text-slate-400 mt-0.5">{{ group.pdfPages }} 頁 • {{ group.coverType }}</p>
+                  <div class="flex items-center space-x-1.5 text-xs text-slate-500 mt-1">
+                    <button 
+                      @click="startEditPages(group)" 
+                      class="inline-flex items-center space-x-1 px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 text-slate-700 font-bold transition-all border border-slate-200"
+                      title="點擊直接修改講義頁數並自動同步所有工單與試算表"
+                    >
+                      <i class="fa-solid fa-file-lines text-indigo-500 text-[10px]"></i>
+                      <span class="font-mono">{{ group.pdfPages || 0 }} 頁</span>
+                      <i class="fa-solid fa-pen text-[9px] text-slate-400"></i>
+                    </button>
+                    <span>•</span>
+                    <span class="text-slate-400">{{ group.coverType }}</span>
+                  </div>
                 </div>
                 
                 <!-- 庫存狀態徽章 -->
@@ -1185,35 +1197,70 @@
         </div>
 
         <!-- 彈窗底部操作按鈕 -->
-        <div class="pt-3 border-t mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-          <div class="flex items-center space-x-2">
-            <button 
-              @click="handleRepairZeroPages" 
-              :disabled="isRepairingPages || isScanningGmail"
-              class="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold rounded-xl border border-amber-300 transition-all flex items-center space-x-1 disabled:opacity-50"
-              title="自動讀取試算表中頁數為 0 的郵件附件 PDF，自動補齊真實頁數與金額"
-            >
-              <i v-if="isRepairingPages" class="fa-solid fa-spinner fa-spin"></i>
-              <i v-else class="fa-solid fa-wrench text-amber-600"></i>
-              <span>{{ isRepairingPages ? '正在解析 PDF 頁數...' : '一鍵修復補齊現有 0 頁工單' }}</span>
-            </button>
-
-            <button 
-              @click="handleForceReloadScan" 
-              :disabled="isScanningGmail || isRepairingPages"
-              class="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-200 transition-all flex items-center space-x-1 disabled:opacity-50"
-              title="清空舊紀錄，依照最新規則強制重新掃描並覆蓋寫入試算表"
-            >
-              <i class="fa-solid fa-arrows-rotate"></i>
-              <span>強制清空並重新完全掃描</span>
-            </button>
-          </div>
+        <div class="pt-3 border-t mt-3 flex items-center justify-between text-xs">
+          <button 
+            @click="handleForceReloadScan" 
+            :disabled="isScanningGmail"
+            class="px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold rounded-xl border border-rose-200 transition-all flex items-center space-x-1 disabled:opacity-50"
+            title="清空舊紀錄，強制從 Gmail 寄件備份重新完整掃描"
+          >
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>強制清空並重新完全掃描全部郵件</span>
+          </button>
 
           <button 
             @click="showScanResultModal = false" 
             class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow"
           >
             關閉日誌並檢視總表
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 快速修改講義頁數彈窗 -->
+    <div v-if="editPagesModal.show" class="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
+        <div class="flex items-center justify-between border-b pb-3">
+          <h3 class="font-bold text-slate-800 flex items-center space-x-1.5 text-sm">
+            <i class="fa-solid fa-pen-to-square text-indigo-600"></i>
+            <span>修改講義頁數</span>
+          </h3>
+          <button @click="editPagesModal.show = false" class="text-slate-400 hover:text-slate-600">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        
+        <div class="space-y-1.5">
+          <label class="text-xs font-bold text-slate-600">講義名稱</label>
+          <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 truncate">
+            {{ editPagesModal.materialName }}
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="text-xs font-bold text-slate-600">真實 PDF 內頁頁數</label>
+          <div class="flex items-center space-x-2">
+            <input 
+              type="number" 
+              v-model.number="editPagesModal.pages" 
+              @keyup.enter="saveEditedPages"
+              placeholder="例如: 126" 
+              class="flex-1 px-3 py-2 border border-slate-300 rounded-xl text-sm font-bold font-mono focus:ring-2 focus:ring-indigo-500"
+            >
+            <span class="text-xs font-bold text-slate-500">頁</span>
+          </div>
+          <p class="text-[11px] text-slate-400 leading-relaxed">
+            修改後系統將自動為該本講義的所有初印與加印工單同步更新頁數，即時重算費用並寫入試算表。
+          </p>
+        </div>
+
+        <div class="pt-2 flex space-x-2">
+          <button @click="editPagesModal.show = false" class="flex-1 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl">
+            取消
+          </button>
+          <button @click="saveEditedPages" :disabled="isSavingPages" class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow">
+            {{ isSavingPages ? '儲存中...' : '確認儲存' }}
           </button>
         </div>
       </div>
@@ -1334,37 +1381,59 @@
           }
         };
 
-        const isRepairingPages = ref(false);
-        const handleRepairZeroPages = () => {
-          isRepairingPages.value = true;
-          triggerToast('正在修復頁數', '正在依據 Gmail 附件二進位結構讀取真實頁數...');
+        // 快速修改講義頁數 (支援畫面上即時編輯並同步試算表)
+        const editPagesModal = ref({ show: false, materialName: '', pages: 0 });
+        const isSavingPages = ref(false);
+
+        const startEditPages = (group) => {
+          editPagesModal.value = {
+            show: true,
+            materialName: group.materialName,
+            pages: group.pdfPages || 0
+          };
+        };
+
+        const saveEditedPages = () => {
+          if (!editPagesModal.value.pages || editPagesModal.value.pages <= 0) {
+            triggerToast('輸入錯誤', '頁數必須大於 0', 'error');
+            return;
+          }
+          isSavingPages.value = true;
+          const matName = editPagesModal.value.materialName;
+          const newP = editPagesModal.value.pages;
+
           if (typeof google !== 'undefined' && google.script && google.script.run) {
             google.script.run
               .withSuccessHandler((res) => {
-                isRepairingPages.value = false;
+                isSavingPages.value = false;
+                editPagesModal.value.show = false;
                 if (res && res.success) {
                   if (res.allOrders && Array.isArray(res.allOrders)) {
                     orders.value = res.allOrders;
                   }
-                  loadOrders(true);
-                  triggerToast('修復完成', res.message);
+                  triggerToast('頁數已更新', res.message);
                 } else {
-                  triggerToast('修復失敗', res ? res.message : '未知錯誤', 'error');
+                  triggerToast('更新失敗', res ? res.message : '未知錯誤', 'error');
                 }
               })
               .withFailureHandler((err) => {
-                isRepairingPages.value = false;
-                triggerToast('修復發生錯誤', err.message, 'error');
+                isSavingPages.value = false;
+                triggerToast('更新錯誤', err.message, 'error');
               })
-              .repairZeroPageOrders();
+              .updateMaterialPages(matName, newP);
           } else {
             setTimeout(() => {
-              isRepairingPages.value = false;
+              isSavingPages.value = false;
+              editPagesModal.value.show = false;
               orders.value.forEach(o => {
-                if (!o.pdfPages || o.pdfPages === 0) o.pdfPages = 126;
+                if (o.materialName === matName) {
+                  o.pdfPages = newP;
+                  const unitP = o.colorType === '彩色' ? 0.9 : 0.38;
+                  o.estimatedTotal = (Math.round((newP * unitP) + (o.bindingCost || 20)) * (o.studentCopies + o.teacherCopies));
+                }
               });
-              triggerToast('修復完成', '已成功為現有工單補齊 PDF 頁數！');
-            }, 800);
+              triggerToast('頁數已更新', `已成功將【${matName}】的頁數更新為 ${newP} 頁！`);
+            }, 500);
           }
         };
 
@@ -1933,8 +2002,10 @@
           filteredScanLogs,
           triggerGmailScan,
           handleForceReloadScan,
-          isRepairingPages,
-          handleRepairZeroPages,
+          editPagesModal,
+          isSavingPages,
+          startEditPages,
+          saveEditedPages,
           handleMarkReceived,
           cleanupCandidates,
           loadCleanupList,
