@@ -847,27 +847,65 @@ function extractPdfPagesFromMessage(msg, attachments, subject) {
 }
 
 /**
- * 從單一 PDF 附件解析二進位字串取得頁數 (雙重演算法：Count 樹狀提取 + Type Page 獨立頁面統計)
+ * 從單一 PDF 附件解析二進位位元組取得頁數 (高速頭尾抽取 + 解除長度限制正則)
  */
 function getPagesFromSinglePdfAttachment(att) {
   try {
-    let pdfStr = "";
-    try {
-      pdfStr = att.getDataAsString("ISO-8859-1");
-    } catch (e1) {
-      pdfStr = att.getDataAsString();
+    const bytes = att.getBytes();
+    const len = bytes.length;
+    if (len === 0) return 0;
+
+    // 1. 高速讀取頭部 64KB (匹配 Linearized Web 快顯頁數)
+    const headLimit = Math.min(len, 65536);
+    let headChars = [];
+    for (let i = 0; i < headLimit; i++) {
+      const b = bytes[i];
+      if ((b >= 32 && b <= 126) || b === 10 || b === 13) {
+        headChars.push(String.fromCharCode(b));
+      } else {
+        headChars.push(" ");
+      }
     }
+    const headStr = headChars.join("");
 
-    if (!pdfStr || pdfStr.length === 0) return 0;
+    // 2. 高速讀取尾部 384KB (PDF 核心型錄 Catalog、Pages 節點與 /Count 必定在檔案尾端)
+    const tailStart = Math.max(0, len - 393216);
+    let tailChars = [];
+    for (let i = tailStart; i < len; i++) {
+      const b = bytes[i];
+      if ((b >= 32 && b <= 126) || b === 10 || b === 13) {
+        tailChars.push(String.fromCharCode(b));
+      } else {
+        tailChars.push(" ");
+      }
+    }
+    const tailStr = tailChars.join("");
 
-    // 1. 匹配 /Count 或 /N
-    let pages = extractPagesFromPdfText(pdfStr);
+    // 3. 組合頭尾字串進行大跨度型錄解析
+    const combined = headStr + "\n" + tailStr;
+    const pages = extractPagesFromPdfText(combined);
     if (pages > 0) return pages;
 
-    // 2. 匹配獨立頁面定義 /Type /Page (單數 Page，排除 /Pages)
-    const pageMatches = pdfStr.match(/\/Type\s*\/Page[^s\w]/g);
-    if (pageMatches && pageMatches.length > 0 && pageMatches.length < 3000) {
-      return pageMatches.length;
+    // 4. 備援：若檔案小於 3MB，直接全檔搜尋 /Type /Page 獨立頁面物件
+    if (len <= 3145728) {
+      let allChars = [];
+      for (let i = 0; i < len; i++) {
+        const b = bytes[i];
+        if ((b >= 32 && b <= 126) || b === 10 || b === 13) {
+          allChars.push(String.fromCharCode(b));
+        } else {
+          allChars.push(" ");
+        }
+      }
+      const allStr = allChars.join("");
+      const p = extractPagesFromPdfText(allStr);
+      if (p > 0) return p;
+
+      // 統計 /Type /Page (兼容 /Type/Page 與 /Type /Page)
+      const pageMatches = allStr.match(/\/Type\s*\/Page[^s\w]/g);
+      if (pageMatches && pageMatches.length > 0 && pageMatches.length < 3000) {
+        return pageMatches.length;
+      }
     }
 
     return 0;
@@ -878,15 +916,22 @@ function getPagesFromSinglePdfAttachment(att) {
 }
 
 /**
- * 正規表示式匹配 PDF 中的 /Count 或 /N
+ * 大跨度正規表示式匹配 PDF 中的 /Count 或 /N (徹底支援破百頁大講義之長 Kids 陣列)
  */
 function extractPagesFromPdfText(text) {
   if (!text) return 0;
   let maxPages = 0;
 
-  // 1. 匹配 /Type /Pages ... /Count N 或 /Count N ... /Type /Pages
-  const typePagesMatches = text.match(/\/Type\s*\/Pages[\s\S]{0,150}?\/Count\s+(\d+)/g) || 
-                           text.match(/\/Count\s+(\d+)[\s\S]{0,150}?\/Type\s*\/Pages/g);
+  // 1. 匹配 /Linearized ... /N <頁數>
+  const linMatches = text.match(/\/Linearized[\s\S]{0,300}?\/N\s+(\d+)/);
+  if (linMatches) {
+    const val = parseInt(linMatches[1], 10);
+    if (val > 0 && val < 3000) return val;
+  }
+
+  // 2. 匹配 /Type /Pages ... /Count N (跨度放寬至 5000 字元，徹底容納長 Kids 陣列)
+  const typePagesMatches = text.match(/\/Type\s*\/Pages[\s\S]{0,5000}?\/Count\s+(\d+)/g) || 
+                           text.match(/\/Count\s+(\d+)[\s\S]{0,5000}?\/Type\s*\/Pages/g);
   if (typePagesMatches) {
     typePagesMatches.forEach(m => {
       const numMatch = m.match(/\/Count\s+(\d+)/);
@@ -896,23 +941,15 @@ function extractPagesFromPdfText(text) {
       }
     });
   }
+  if (maxPages > 0) return maxPages;
 
-  // 2. 匹配 /Linearized 1 ... /N <頁數>
-  const linMatches = text.match(/\/Linearized\s+1[\s\S]{0,150}?\/N\s+(\d+)/);
-  if (linMatches) {
-    const val = parseInt(linMatches[1], 10);
-    if (val > maxPages && val < 4000) maxPages = val;
-  }
-
-  // 3. 匹配一般 /Count N
-  if (maxPages === 0) {
-    const countMatches = text.match(/\/Count\s+(\d+)/g);
-    if (countMatches) {
-      countMatches.forEach(m => {
-        const val = parseInt(m.replace(/\/Count\s+/, ''), 10);
-        if (val > maxPages && val < 4000) maxPages = val;
-      });
-    }
+  // 3. 匹配所有獨立的 /Count N (如 /Count 126)
+  const countMatches = text.match(/\/Count\s+(\d+)/g);
+  if (countMatches) {
+    countMatches.forEach(m => {
+      const val = parseInt(m.replace(/\/Count\s+/, ''), 10);
+      if (val > maxPages && val < 4000) maxPages = val;
+    });
   }
 
   return maxPages;
