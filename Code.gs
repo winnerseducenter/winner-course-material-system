@@ -62,10 +62,15 @@ function getOrCreateDb() {
       "教用本數", "PDF頁數", "交件日期", "封面規格", "特殊備註", 
       "郵件完整主旨", "Gmail訊息ID", "信件狀態", "到貨狀態", "到貨時間", 
       "已發放本數", "單頁單價", "裝訂費用", "特殊加價", "預估總金額", 
-      "是否完成對帳", "建立時間", "附件檔案IDs", "學生名單JSON"
+      "是否完成對帳", "建立時間", "附件檔案IDs", "學生名單JSON", "是否封存"
     ]);
     sheet.setFrozenRows(1);
-    sheet.getRange(1, 1, 1, 24).setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold");
+    sheet.getRange(1, 1, 1, 25).setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold");
+  } else {
+    // 自動相容既有資料庫，若未達 25 欄自動補齊表頭
+    if (sheet.getLastColumn() < 25) {
+      sheet.getRange(1, 25).setValue("是否封存").setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold");
+    }
   }
   return { ss, sheet };
 }
@@ -115,7 +120,8 @@ function getOrders() {
       reconciled: r[20] === true || r[20] === "TRUE",
       createdAt: formatDateSafe(r[21]),
       attachmentIds: r[22] ? String(r[22]).split(",") : [],
-      rosterJson: String(r[23] || "[]")
+      rosterJson: String(r[23] || "[]"),
+      isArchived: r[24] === true || r[24] === "TRUE"
     };
   });
 }
@@ -1090,3 +1096,72 @@ function updateMaterialPages(materialName, newPages) {
     return { success: false, message: "更新頁數失敗：" + err.message };
   }
 }
+
+/**
+ * 切換講義的封存狀態 (支援封存與解除封存，同步落盤寫入試算表第 25 欄)
+ */
+function toggleArchiveMaterial(materialName, isArchived) {
+  try {
+    const { sheet } = getOrCreateDb();
+    const data = sheet.getDataRange().getValues();
+    const archiveVal = (isArchived === true);
+    let updatedRows = 0;
+
+    // 確保第 25 欄表頭存在
+    if (sheet.getLastColumn() < 25) {
+      sheet.getRange(1, 25).setValue("是否封存").setBackground("#1e293b").setFontColor("#ffffff").setFontWeight("bold");
+    }
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][1]).trim() === String(materialName).trim()) {
+        sheet.getRange(i + 1, 25).setValue(archiveVal); // Y 欄為欄位 25 (是否封存)
+        updatedRows++;
+      }
+    }
+
+    SpreadsheetApp.flush();
+    const allLatestOrders = getOrders();
+    return {
+      success: true,
+      isArchived: archiveVal,
+      allOrders: allLatestOrders,
+      message: archiveVal ? `已將【${materialName}】封存！` : `已將【${materialName}】解除封存並移回進行中！`
+    };
+  } catch (err) {
+    return { success: false, message: "更新封存狀態失敗：" + err.message };
+  }
+}
+
+/**
+ * 儲存指定母講義的學生發放名單與扣減庫存 (落盤寫入試算表第 16 欄已發放數與第 24 欄名單JSON)
+ */
+function saveMaterialDistributionRoster(materialName, rosterList) {
+  try {
+    const { sheet } = getOrCreateDb();
+    const data = sheet.getDataRange().getValues();
+    const list = Array.isArray(rosterList) ? rosterList : [];
+    const distributedCopies = list.filter(s => s && s.received === true).length;
+    const rosterJson = JSON.stringify(list);
+    let updatedRows = 0;
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][1]).trim() === String(materialName).trim()) {
+        sheet.getRange(i + 1, 16).setValue(distributedCopies); // P 欄：已發放本數
+        sheet.getRange(i + 1, 24).setValue(rosterJson); // X 欄：學生名單 JSON
+        updatedRows++;
+      }
+    }
+
+    SpreadsheetApp.flush();
+    const allLatestOrders = getOrders();
+    return {
+      success: true,
+      distributedCopies: distributedCopies,
+      allOrders: allLatestOrders,
+      message: `已成功保存【${materialName}】學生發放紀錄！共 ${distributedCopies} 位學生領取，庫存已即時扣減！`
+    };
+  } catch (err) {
+    return { success: false, message: "儲存學生名單失敗：" + err.message };
+  }
+}
+

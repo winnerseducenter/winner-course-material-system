@@ -438,6 +438,51 @@
           </div>
         </div>
 
+        <!-- 講義庫存分類篩選列 (進行中 / 已封存 / 全部) 與搜尋 -->
+        <div v-if="groupedMaterials.length > 0" class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+          <!-- 狀態頁籤切換 -->
+          <div class="flex items-center space-x-1.5 p-1 bg-slate-100 rounded-xl text-xs font-bold">
+            <button 
+              @click="inventoryFilter = 'active'"
+              class="px-3 py-1.5 rounded-lg transition-all flex items-center space-x-1.5"
+              :class="inventoryFilter === 'active' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'"
+            >
+              <i class="fa-solid fa-bookmark text-indigo-500"></i>
+              <span>進行中 / 本學期</span>
+              <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-100 text-indigo-700 font-mono">{{ activeMaterialsCount }}</span>
+            </button>
+            <button 
+              @click="inventoryFilter = 'archived'"
+              class="px-3 py-1.5 rounded-lg transition-all flex items-center space-x-1.5"
+              :class="inventoryFilter === 'archived' ? 'bg-white text-amber-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'"
+            >
+              <i class="fa-solid fa-box-archive text-amber-500"></i>
+              <span>已封存講義</span>
+              <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-100 text-amber-700 font-mono">{{ archivedMaterialsCount }}</span>
+            </button>
+            <button 
+              @click="inventoryFilter = 'all'"
+              class="px-3 py-1.5 rounded-lg transition-all flex items-center space-x-1.5"
+              :class="inventoryFilter === 'all' ? 'bg-white text-slate-800 shadow-xs' : 'text-slate-600 hover:text-slate-900'"
+            >
+              <i class="fa-solid fa-list-ul text-slate-400"></i>
+              <span>全部講義</span>
+              <span class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-200 text-slate-700 font-mono">{{ groupedMaterials.length }}</span>
+            </button>
+          </div>
+
+          <!-- 搜尋框 -->
+          <div class="relative w-full sm:w-64">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+            <input 
+              type="text" 
+              v-model="inventorySearch" 
+              placeholder="搜尋講義名稱..." 
+              class="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-indigo-500 transition-all"
+            >
+          </div>
+        </div>
+
         <!-- 空狀態引導卡片 (當尚未有任何工單時) -->
         <div v-if="groupedMaterials.length === 0" class="bg-white rounded-2xl p-12 text-center border-2 border-dashed border-slate-200">
           <div class="w-16 h-16 bg-amber-100 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4 text-2xl shadow-inner">
@@ -466,20 +511,35 @@
           </div>
         </div>
 
+        <!-- 篩選後無講義提示 -->
+        <div v-else-if="filteredGroupedMaterials.length === 0" class="bg-white rounded-2xl p-10 text-center border border-slate-200">
+          <i class="fa-solid fa-inbox text-slate-300 text-3xl mb-2"></i>
+          <p class="text-xs font-bold text-slate-500">在此分類下沒有符合條件的講義</p>
+          <button @click="inventoryFilter = 'all'; inventorySearch = ''" class="mt-3 text-xs text-indigo-600 hover:underline font-bold">
+            清除篩選並檢視全部
+          </button>
+        </div>
+
         <!-- 講義母卡片清單 (母子架構) -->
         <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <div 
-            v-for="group in groupedMaterials" 
+            v-for="group in filteredGroupedMaterials" 
             :key="group.materialName"
             class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 hover:shadow-md transition-all flex flex-col justify-between"
+            :class="{ 'opacity-85 bg-slate-50/50': group.isArchived }"
           >
             <div>
               <div class="flex items-start justify-between">
                 <div>
-                  <span class="text-[11px] font-bold px-2 py-0.5 rounded-full"
-                        :class="group.colorType === '彩色' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-700'">
-                    {{ group.colorType }}
-                  </span>
+                  <div class="flex items-center space-x-1.5">
+                    <span class="text-[11px] font-bold px-2 py-0.5 rounded-full"
+                          :class="group.colorType === '彩色' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-700'">
+                      {{ group.colorType }}
+                    </span>
+                    <span v-if="group.isArchived" class="text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">
+                      <i class="fa-solid fa-box-archive mr-0.5"></i>已封存
+                    </span>
+                  </div>
                   <h3 class="text-base font-bold text-slate-800 mt-1.5">{{ group.materialName }}</h3>
                   <div class="flex items-center space-x-1.5 text-xs text-slate-500 mt-1">
                     <button 
@@ -496,9 +556,18 @@
                   </div>
                 </div>
                 
-                <!-- 庫存狀態徽章 -->
-                <div class="text-right">
-                  <span class="text-xs text-slate-500 font-medium">剩餘庫存</span>
+                <!-- 庫存狀態徽章與封存操作按鈕 -->
+                <div class="text-right flex flex-col items-end">
+                  <div class="flex items-center space-x-1.5">
+                    <span class="text-xs text-slate-500 font-medium">剩餘庫存</span>
+                    <button 
+                      @click="handleToggleArchive(group)"
+                      class="p-1 rounded-md text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-all"
+                      :title="group.isArchived ? '點擊解除封存（移回進行中）' : '點擊封存此講義（舊學期/已結案）'"
+                    >
+                      <i :class="group.isArchived ? 'fa-solid fa-box-archive text-amber-600 text-sm' : 'fa-regular fa-folder-closed text-xs'"></i>
+                    </button>
+                  </div>
                   <div class="text-xl font-black font-mono" :class="group.stockLeft > 0 ? 'text-emerald-600' : 'text-rose-600'">
                     {{ group.stockLeft }} <span class="text-xs text-slate-400 font-normal">本</span>
                   </div>
@@ -913,13 +982,19 @@
               </div>
 
               <!-- 儲存發放結果與扣庫存按鈕 -->
-              <div class="pt-3 border-t border-slate-100 flex justify-end">
+              <div class="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <span class="text-xs text-slate-500">
+                  <i class="fa-solid fa-cloud-arrow-up mr-1 text-emerald-600"></i>
+                  儲存後，名單資料與發放狀態將即時落盤寫入 Google Sheets 試算表永久保存。
+                </span>
                 <button 
                   @click="saveRosterDistribution"
-                  class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center space-x-1.5"
+                  :disabled="isSavingRoster || !selectedMaterialForRoster"
+                  class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center space-x-1.5 disabled:opacity-50"
                 >
-                  <i class="fa-solid fa-floppy-disk"></i>
-                  <span>儲存本次發放紀錄並更新庫存</span>
+                  <i v-if="isSavingRoster" class="fa-solid fa-spinner fa-spin"></i>
+                  <i v-else class="fa-solid fa-floppy-disk"></i>
+                  <span>{{ isSavingRoster ? '正在保存到雲端試算表...' : '儲存本次發放紀錄並更新庫存' }}</span>
                 </button>
               </div>
             </div>
@@ -1743,6 +1818,8 @@
                 colorType: o.colorType,
                 coverType: o.coverType,
                 pdfPages: o.pdfPages,
+                isArchived: o.isArchived === true,
+                rosterList: [],
                 batches: [],
                 totalPrinted: 0,
                 initialCopies: 0,
@@ -1753,6 +1830,19 @@
               };
             }
             const group = map[o.materialName];
+            // 只要有任一筆被標記封存，該母講義即為封存狀態
+            if (o.isArchived === true) group.isArchived = true;
+
+            // 讀取已保存之學生發放名單
+            if (o.rosterJson && group.rosterList.length === 0) {
+              try {
+                const parsed = JSON.parse(o.rosterJson);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                  group.rosterList = parsed;
+                }
+              } catch (e) {}
+            }
+
             const copies = o.studentCopies + o.teacherCopies;
             group.batches.push(o);
             group.totalPrinted += copies;
@@ -1760,14 +1850,85 @@
             else group.initialCopies += copies;
 
             if (o.deliveryStatus === 'RECEIVED') group.totalReceived += copies;
-            group.totalDistributed += (o.distributedCopies || 0);
+            group.totalDistributed = Math.max(group.totalDistributed, Number(o.distributedCopies) || 0);
           });
 
           Object.values(map).forEach(g => {
-            g.stockLeft = g.totalReceived - g.totalDistributed;
+            // 若有儲存學生名單且名單中有已領人數，優先以名單已領人數計算現場已發放
+            if (g.rosterList && g.rosterList.length > 0) {
+              const fromRoster = g.rosterList.filter(s => s && s.received === true).length;
+              if (fromRoster > 0) g.totalDistributed = fromRoster;
+            }
+            g.stockLeft = Math.max(0, g.totalReceived - g.totalDistributed);
           });
           return Object.values(map);
         });
+
+        // 庫存分類篩選 (進行中 / 已封存 / 全部) 與搜尋
+        const inventoryFilter = ref('active'); // 'active', 'archived', 'all'
+        const inventorySearch = ref('');
+
+        const activeMaterialsCount = computed(() => {
+          return groupedMaterials.value.filter(g => !g.isArchived).length;
+        });
+
+        const archivedMaterialsCount = computed(() => {
+          return groupedMaterials.value.filter(g => g.isArchived).length;
+        });
+
+        const filteredGroupedMaterials = computed(() => {
+          return groupedMaterials.value.filter(g => {
+            // 封存狀態篩選
+            if (inventoryFilter.value === 'active' && g.isArchived) return false;
+            if (inventoryFilter.value === 'archived' && !g.isArchived) return false;
+
+            // 關鍵字搜尋
+            const q = inventorySearch.value.trim().toLowerCase();
+            if (q && !g.materialName.toLowerCase().includes(q)) return false;
+
+            return true;
+          });
+        });
+
+        // 切換講義封存狀態
+        const isTogglingArchive = ref(false);
+        const handleToggleArchive = (group) => {
+          const nextState = !group.isArchived;
+          const actionText = nextState ? '封存' : '解除封存';
+          const confirmMsg = nextState 
+            ? `確定要將【${group.materialName}】封存嗎？封存後將移至「已封存講義」區，主畫面只保留進行中課程。` 
+            : `確定要將【${group.materialName}】解除封存並移回進行中講義嗎？`;
+          if (!confirm(confirmMsg)) return;
+
+          isTogglingArchive.value = true;
+          if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+              .withSuccessHandler((res) => {
+                isTogglingArchive.value = false;
+                if (res && res.success) {
+                  if (res.allOrders && Array.isArray(res.allOrders)) {
+                    orders.value = res.allOrders;
+                  }
+                  triggerToast(nextState ? '講義已封存' : '已解除封存', res.message);
+                } else {
+                  triggerToast('操作失敗', res ? res.message : '未知錯誤', 'error');
+                }
+              })
+              .withFailureHandler((err) => {
+                isTogglingArchive.value = false;
+                triggerToast('操作錯誤', err.message, 'error');
+              })
+              .toggleArchiveMaterial(group.materialName, nextState);
+          } else {
+            // 本地模擬
+            group.isArchived = nextState;
+            orders.value.forEach(o => {
+              if (o.materialName === group.materialName) o.isArchived = nextState;
+            });
+            isTogglingArchive.value = false;
+            triggerToast(nextState ? '講義已封存' : '已解除封存', `已將【${group.materialName}】${actionText}！`);
+          }
+        };
 
         // 正式送印發送
         const handleSendPrintEmail = async () => {
@@ -1930,16 +2091,36 @@
           reader.readAsArrayBuffer(file);
         };
 
-        // 學生現場發放名單 (預設為空，由使用者貼上名單載入)
+        // 學生現場發放名單 (由 Google Sheets 永久保存並支援即時點名)
         const selectedMaterialForRoster = ref('');
         const rawRosterInput = ref('');
         const newStudentName = ref('');
         const activeRoster = ref([]);
+        const isSavingRoster = ref(false);
+
+        // 依據講義名稱自動載入已儲存之學生名單
+        const loadRosterForMaterial = (matName) => {
+          if (!matName) return;
+          const grp = groupedMaterials.value.find(g => g.materialName === matName);
+          if (grp && grp.rosterList && grp.rosterList.length > 0) {
+            activeRoster.value = JSON.parse(JSON.stringify(grp.rosterList));
+          } else {
+            activeRoster.value = [];
+          }
+        };
 
         const openDistributionTab = (group) => {
           selectedMaterialForRoster.value = group.materialName;
+          loadRosterForMaterial(group.materialName);
           currentTab.value = 'roster';
         };
+
+        // 監聽講義選取變化，自動切換載入該講義先前儲存的名單
+        watch(selectedMaterialForRoster, (newVal) => {
+          if (newVal) {
+            loadRosterForMaterial(newVal);
+          }
+        });
 
         const parseAndApplyRoster = () => {
           if (!rawRosterInput.value) return;
@@ -1966,9 +2147,45 @@
           activeRoster.value.forEach(s => s.received = status);
         };
 
+        // 真實落盤保存發放紀錄與學生名單至 Google Sheets
         const saveRosterDistribution = () => {
+          const matName = selectedMaterialForRoster.value;
+          if (!matName) {
+            triggerToast('請先選擇講義', '尚未指定發放之講義名稱', 'error');
+            return;
+          }
+          isSavingRoster.value = true;
           const receivedCount = activeRoster.value.filter(s => s.received).length;
-          triggerToast('發放紀錄已儲存', `已發出 ${receivedCount} 本講義，已即時更新扣減庫存！`);
+
+          if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+              .withSuccessHandler((res) => {
+                isSavingRoster.value = false;
+                if (res && res.success) {
+                  if (res.allOrders && Array.isArray(res.allOrders)) {
+                    orders.value = res.allOrders;
+                  }
+                  triggerToast('發放紀錄已落盤保存', res.message);
+                } else {
+                  triggerToast('儲存失敗', res ? res.message : '未知錯誤', 'error');
+                }
+              })
+              .withFailureHandler((err) => {
+                isSavingRoster.value = false;
+                triggerToast('儲存錯誤', err.message, 'error');
+              })
+              .saveMaterialDistributionRoster(matName, activeRoster.value);
+          } else {
+            // 本地模擬
+            isSavingRoster.value = false;
+            orders.value.forEach(o => {
+              if (o.materialName === matName) {
+                o.distributedCopies = receivedCount;
+                o.rosterJson = JSON.stringify(activeRoster.value);
+              }
+            });
+            triggerToast('發放紀錄已儲存', `已發出 ${receivedCount} 本講義，已即時更新扣減庫存！`);
+          }
         };
 
         const saveSettings = () => {
@@ -1982,6 +2199,15 @@
                 const list = Array.isArray(res) ? res : (res && res.orders && Array.isArray(res.orders) ? res.orders : []);
                 orders.value = list;
                 updateCleanupBadge();
+                if (!selectedMaterialForRoster.value) {
+                  const firstActive = groupedMaterials.value.find(g => !g.isArchived) || groupedMaterials.value[0];
+                  if (firstActive) {
+                    selectedMaterialForRoster.value = firstActive.materialName;
+                    loadRosterForMaterial(firstActive.materialName);
+                  }
+                } else {
+                  loadRosterForMaterial(selectedMaterialForRoster.value);
+                }
                 if (!silent && list.length > 0) {
                   triggerToast('已同步資料庫', `成功載入 ${list.length} 筆講義工單！`);
                 }
@@ -2031,6 +2257,13 @@
           confirmAttachmentSelection,
           orders,
           groupedMaterials,
+          inventoryFilter,
+          inventorySearch,
+          activeMaterialsCount,
+          archivedMaterialsCount,
+          filteredGroupedMaterials,
+          isTogglingArchive,
+          handleToggleArchive,
           startQuickReprint,
           isScanningGmail,
           showScanResultModal,
@@ -2057,6 +2290,8 @@
           rawRosterInput,
           newStudentName,
           activeRoster,
+          isSavingRoster,
+          loadRosterForMaterial,
           openDistributionTab,
           parseAndApplyRoster,
           addNewStudentToRoster,
