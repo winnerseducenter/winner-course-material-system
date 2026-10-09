@@ -1374,9 +1374,9 @@
 
   <!-- 前端邏輯 Vue 3 -->
   <script>
-    const { createApp, ref, computed, onMounted } = Vue;
+    const { createApp, ref, computed, onMounted, watch } = Vue;
 
-    createApp({
+    const app = createApp({
       setup() {
         const currentTab = ref('wizard');
         const isSubmitting = ref(false);
@@ -2302,7 +2302,22 @@
           loadOrders
         };
       }
-    }).mount('#app');
+    });
+
+    app.config.errorHandler = (err, instance, info) => {
+      console.error('Vue 執行異常:', err, info);
+      const errDiv = document.getElementById('global-error-display');
+      if (errDiv) {
+        errDiv.style.display = 'block';
+        errDiv.innerHTML = '<div style="background:#fee2e2;border:2px solid #ef4444;color:#991b1b;padding:16px;border-radius:12px;margin:20px;font-family:sans-serif;">' +
+          '<h3 style="margin:0 0 8px 0;font-size:16px;font-weight:bold;">⚠️ 頁面元件執行異常提示：</h3>' +
+          '<p style="margin:0 0 8px 0;font-size:14px;">' + (err.message || String(err)) + '</p>' +
+          '<small style="color:#b91c1c;">詳細資訊: ' + info + '</small>' +
+          '</div>';
+      }
+    };
+
+    app.mount('#app');
   </script>
 </body>
 </html>
